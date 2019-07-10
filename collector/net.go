@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -55,73 +56,73 @@ func NewNetworkCollector() (Collector, error) {
 		BytesReceivedTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "bytes_received_total"),
 			"(Network.BytesReceivedPerSec)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		BytesSentTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "bytes_sent_total"),
 			"(Network.BytesSentPerSec)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		BytesTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "bytes_total"),
 			"(Network.BytesTotalPerSec)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsOutboundDiscarded: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_outbound_discarded"),
 			"(Network.PacketsOutboundDiscarded)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsOutboundErrors: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_outbound_errors"),
 			"(Network.PacketsOutboundErrors)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsReceivedDiscarded: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_received_discarded"),
 			"(Network.PacketsReceivedDiscarded)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsReceivedErrors: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_received_errors"),
 			"(Network.PacketsReceivedErrors)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsReceivedTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_received_total"),
 			"(Network.PacketsReceivedPerSec)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsReceivedUnknown: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_received_unknown"),
 			"(Network.PacketsReceivedUnknown)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_total"),
 			"(Network.PacketsPerSec)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		PacketsSentTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "packets_sent_total"),
 			"(Network.PacketsSentPerSec)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 		CurrentBandwidth: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "current_bandwidth"),
 			"(Network.CurrentBandwidth)",
-			[]string{"nic"},
+			[]string{"host", "nic"},
 			nil,
 		),
 
@@ -165,10 +166,32 @@ type Win32_PerfRawData_Tcpip_NetworkInterface struct {
 }
 
 func (c *NetworkCollector) collect(ch chan<- prometheus.Metric) (*prometheus.Desc, error) {
+	var dst_csproduct []Win32_ComputerSystemProduct
+	q := queryAll(&dst_csproduct)
+	if err := wmi.Query(q, &dst_csproduct); err != nil {
+		return nil, err
+	}
+
+	if len(dst_csproduct) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+	hostUUID := dst_csproduct[0].UUID
+
+	var dst_os []Win32_OperatingSystem
+	q2 := queryAll(&dst_os)
+	if err := wmi.Query(q2, &dst_os); err != nil {
+		return nil, err
+	}
+
+	if len(dst_os) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+	hostName := dst_os[0].CSName
+
 	var dst []Win32_PerfRawData_Tcpip_NetworkInterface
 
-	q := queryAll(&dst)
-	if err := wmi.Query(q, &dst); err != nil {
+	q3 := queryAll(&dst)
+	if err := wmi.Query(q3, &dst); err != nil {
 		return nil, err
 	}
 
@@ -184,78 +207,78 @@ func (c *NetworkCollector) collect(ch chan<- prometheus.Metric) (*prometheus.Des
 		}
 
 		// Counters
-		ch <- prometheus.MustNewConstMetric(
-			c.BytesReceivedTotal,
-			prometheus.CounterValue,
-			float64(nic.BytesReceivedPerSec),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.BytesSentTotal,
-			prometheus.CounterValue,
-			float64(nic.BytesSentPerSec),
-			name,
-		)
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.BytesReceivedTotal,
+				prometheus.CounterValue,
+				float64(nic.BytesReceivedPerSec),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.BytesSentTotal,
+				prometheus.CounterValue,
+				float64(nic.BytesSentPerSec),
+				hostUUID, name,
+			)*/
 		ch <- prometheus.MustNewConstMetric(
 			c.BytesTotal,
 			prometheus.CounterValue,
 			float64(nic.BytesTotalPerSec),
-			name,
+			hostName+" "+hostUUID, name,
 		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsOutboundDiscarded,
-			prometheus.CounterValue,
-			float64(nic.PacketsOutboundDiscarded),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsOutboundErrors,
-			prometheus.CounterValue,
-			float64(nic.PacketsOutboundErrors),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsTotal,
-			prometheus.CounterValue,
-			float64(nic.PacketsPerSec),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsReceivedDiscarded,
-			prometheus.CounterValue,
-			float64(nic.PacketsReceivedDiscarded),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsReceivedErrors,
-			prometheus.CounterValue,
-			float64(nic.PacketsReceivedErrors),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsReceivedTotal,
-			prometheus.CounterValue,
-			float64(nic.PacketsReceivedPerSec),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsReceivedUnknown,
-			prometheus.CounterValue,
-			float64(nic.PacketsReceivedUnknown),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.PacketsSentTotal,
-			prometheus.CounterValue,
-			float64(nic.PacketsSentPerSec),
-			name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.CurrentBandwidth,
-			prometheus.CounterValue,
-			float64(nic.CurrentBandwidth),
-			name,
-		)
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsOutboundDiscarded,
+				prometheus.CounterValue,
+				float64(nic.PacketsOutboundDiscarded),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsOutboundErrors,
+				prometheus.CounterValue,
+				float64(nic.PacketsOutboundErrors),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsTotal,
+				prometheus.CounterValue,
+				float64(nic.PacketsPerSec),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsReceivedDiscarded,
+				prometheus.CounterValue,
+				float64(nic.PacketsReceivedDiscarded),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsReceivedErrors,
+				prometheus.CounterValue,
+				float64(nic.PacketsReceivedErrors),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsReceivedTotal,
+				prometheus.CounterValue,
+				float64(nic.PacketsReceivedPerSec),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsReceivedUnknown,
+				prometheus.CounterValue,
+				float64(nic.PacketsReceivedUnknown),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.PacketsSentTotal,
+				prometheus.CounterValue,
+				float64(nic.PacketsSentPerSec),
+				hostUUID, name,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.CurrentBandwidth,
+				prometheus.CounterValue,
+				float64(nic.CurrentBandwidth),
+				hostUUID, name,
+			)*/
 	}
 
 	return nil, nil

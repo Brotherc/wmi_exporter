@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -51,6 +52,9 @@ type CPUCollector struct {
 	InterruptsTotal    *prometheus.Desc
 	DPCsTotal          *prometheus.Desc
 	ProcessorFrequency *prometheus.Desc
+	Cores              *prometheus.Desc
+	ClockSpeed         *prometheus.Desc
+	LogicalProcessors  *prometheus.Desc
 }
 
 // NewCPUCollector constructs a new CPUCollector
@@ -60,32 +64,44 @@ func NewCPUCollector() (Collector, error) {
 		CStateSecondsTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "cstate_seconds_total"),
 			"Time spent in low-power idle state",
-			[]string{"core", "state"},
+			[]string{"host", "core", "state"},
 			nil,
 		),
 		TimeTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "time_total"),
 			"Time that processor spent in different modes (idle, user, system, ...)",
-			[]string{"core", "mode"},
+			[]string{"host", "core", "mode"},
 			nil,
 		),
 
 		InterruptsTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "interrupts_total"),
 			"Total number of received and serviced hardware interrupts",
-			[]string{"core"},
+			[]string{"host", "core"},
 			nil,
 		),
 		DPCsTotal: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, subsystem, "dpcs_total"),
 			"Total number of received and serviced deferred procedure calls (DPCs)",
-			[]string{"core"},
+			[]string{"host", "core"},
 			nil,
 		),
-		ProcessorFrequency: prometheus.NewDesc(
-			prometheus.BuildFQName(Namespace, subsystem, "core_frequence_mhz"),
-			"Core frequency in megahertz",
-			[]string{"core"},
+		Cores: prometheus.NewDesc(
+			prometheus.BuildFQName(Namespace, subsystem, "cores"),
+			"The physical CPU cores",
+			[]string{"host"},
+			nil,
+		),
+		ClockSpeed: prometheus.NewDesc(
+			prometheus.BuildFQName(Namespace, subsystem, "clock_speed"),
+			"The physical CPU clock speed",
+			[]string{"host"},
+			nil,
+		),
+		LogicalProcessors: prometheus.NewDesc(
+			prometheus.BuildFQName(Namespace, subsystem, "logical_processors"),
+			"ComputerSystem.NumberOfLogicalProcessors",
+			[]string{"host"},
 			nil,
 		),
 	}, nil
@@ -122,6 +138,15 @@ type Win32_PerfRawData_PerfOS_Processor struct {
 	PercentUserTime       uint64
 }
 
+type Win32_Processor struct {
+	Name                      string
+	NumberOfCores             uint32
+	NumberOfLogicalProcessors uint32
+	CurrentClockSpeed         uint32
+	MaxClockSpeed             uint32
+}
+
+/*
 type Win32_PerfRawData_Counters_ProcessorInformation struct {
 	Name                        string
 	AverageIdleTime             uint64
@@ -152,171 +177,152 @@ type Win32_PerfRawData_Counters_ProcessorInformation struct {
 	PerformanceLimitFlags       uint64
 	ProcessorFrequency          uint64
 	ProcessorStateFlags         uint64
-}
+}*/
 
 func (c *CPUCollector) collect(ch chan<- prometheus.Metric) (*prometheus.Desc, error) {
-	version := getWindowsVersion()
-	// Windows version by number https://docs.microsoft.com/en-us/windows/desktop/sysinfo/operating-system-version
-	// For Windows 2008 or earlier Windows version is 6.0 or lower, so we use Win32_PerfRawData_PerfOS_Processor class
-	// For Windows 2008 R2 or later  Windows version is 6.1 or higher, so we use Win32_PerfRawData_Counters_ProcessorInformation
-	// Value 6.05 was selected just to split between WIndows versions
-	if version > 6.05 {
-		var dst []Win32_PerfRawData_Counters_ProcessorInformation
-		q := queryAll(&dst)
-		if err := wmi.Query(q, &dst); err != nil {
-			return nil, err
-		}
-
-		for _, data := range dst {
-			if strings.Contains(data.Name, "_Total") {
-				continue
-			}
-			core := data.Name
-
-			ch <- prometheus.MustNewConstMetric(
-				c.ProcessorFrequency,
-				prometheus.GaugeValue,
-				float64(data.ProcessorFrequency),
-				core,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.CStateSecondsTotal,
-				prometheus.CounterValue,
-				float64(data.PercentC1Time)*ticksToSecondsScaleFactor,
-				core, "c1",
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.CStateSecondsTotal,
-				prometheus.CounterValue,
-				float64(data.PercentC2Time)*ticksToSecondsScaleFactor,
-				core, "c2",
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.CStateSecondsTotal,
-				prometheus.CounterValue,
-				float64(data.PercentC3Time)*ticksToSecondsScaleFactor,
-				core, "c3",
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.TimeTotal,
-				prometheus.CounterValue,
-				float64(data.PercentIdleTime)*ticksToSecondsScaleFactor,
-				core, "idle",
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.TimeTotal,
-				prometheus.CounterValue,
-				float64(data.PercentInterruptTime)*ticksToSecondsScaleFactor,
-				core, "interrupt",
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.TimeTotal,
-				prometheus.CounterValue,
-				float64(data.PercentDPCTime)*ticksToSecondsScaleFactor,
-				core, "dpc",
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.TimeTotal,
-				prometheus.CounterValue,
-				float64(data.PercentPrivilegedTime)*ticksToSecondsScaleFactor,
-				core, "privileged",
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.TimeTotal,
-				prometheus.CounterValue,
-				float64(data.PercentUserTime)*ticksToSecondsScaleFactor,
-				core, "user",
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.InterruptsTotal,
-				prometheus.CounterValue,
-				float64(data.InterruptsPersec),
-				core,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.DPCsTotal,
-				prometheus.CounterValue,
-				float64(data.DPCsQueuedPersec),
-				core,
-			)
-		}
-
-		return nil, nil
-
-	}
-	var dst []Win32_PerfRawData_PerfOS_Processor
-	q := queryAll(&dst)
-	if err := wmi.Query(q, &dst); err != nil {
+	var dst_csproduct []Win32_ComputerSystemProduct
+	q := queryAll(&dst_csproduct)
+	if err := wmi.Query(q, &dst_csproduct); err != nil {
 		return nil, err
 	}
+
+	if len(dst_csproduct) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+	hostUUID := dst_csproduct[0].UUID
+
+	var dst_os []Win32_OperatingSystem
+	q2 := queryAll(&dst_os)
+	if err := wmi.Query(q2, &dst_os); err != nil {
+		return nil, err
+	}
+
+	if len(dst_os) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+	hostName := dst_os[0].CSName
+
+	var dst []Win32_PerfRawData_PerfOS_Processor
+	q3 := queryAll(&dst)
+	if err := wmi.Query(q3, &dst); err != nil {
+		return nil, err
+	}
+
 	for _, data := range dst {
 		if strings.Contains(data.Name, "_Total") {
 			continue
 		}
+
 		core := data.Name
-		ch <- prometheus.MustNewConstMetric(
-			c.CStateSecondsTotal,
-			prometheus.CounterValue,
-			float64(data.PercentC1Time)*ticksToSecondsScaleFactor,
-			core, "c1",
+
+		// These are only available from Win32_PerfRawData_Counters_ProcessorInformation, which is only available from Win2008R2+
+		/*ch <- prometheus.MustNewConstMetric(
+			c.ProcessorFrequency,
+			prometheus.GaugeValue,
+			float64(data.ProcessorFrequency),
+			socket, core,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.CStateSecondsTotal,
-			prometheus.CounterValue,
-			float64(data.PercentC2Time)*ticksToSecondsScaleFactor,
-			core, "c2",
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.CStateSecondsTotal,
-			prometheus.CounterValue,
-			float64(data.PercentC3Time)*ticksToSecondsScaleFactor,
-			core, "c3",
-		)
+			c.MaximumFrequency,
+			prometheus.GaugeValue,
+			float64(data.PercentofMaximumFrequency)/100*float64(data.ProcessorFrequency),
+			socket, core,
+		)*/
+
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.CStateSecondsTotal,
+				prometheus.GaugeValue,
+				float64(data.PercentC1Time)*ticksToSecondsScaleFactor,
+				hostName + " " + hostUUID, core, "c1",
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.CStateSecondsTotal,
+				prometheus.GaugeValue,
+				float64(data.PercentC2Time)*ticksToSecondsScaleFactor,
+				hostName + " " + hostUUID, core, "c2",
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.CStateSecondsTotal,
+				prometheus.GaugeValue,
+				float64(data.PercentC3Time)*ticksToSecondsScaleFactor,
+				hostName + " " + hostUUID, core, "c3",
+			)*/
+
 		ch <- prometheus.MustNewConstMetric(
 			c.TimeTotal,
-			prometheus.CounterValue,
+			prometheus.GaugeValue,
 			float64(data.PercentIdleTime)*ticksToSecondsScaleFactor,
-			core, "idle",
+			hostName+" "+hostUUID, core, "idle",
 		)
 		ch <- prometheus.MustNewConstMetric(
 			c.TimeTotal,
-			prometheus.CounterValue,
+			prometheus.GaugeValue,
 			float64(data.PercentInterruptTime)*ticksToSecondsScaleFactor,
-			core, "interrupt",
+			hostName+" "+hostUUID, core, "interrupt",
 		)
 		ch <- prometheus.MustNewConstMetric(
 			c.TimeTotal,
-			prometheus.CounterValue,
+			prometheus.GaugeValue,
 			float64(data.PercentDPCTime)*ticksToSecondsScaleFactor,
-			core, "dpc",
+			hostName+" "+hostUUID, core, "dpc",
 		)
 		ch <- prometheus.MustNewConstMetric(
 			c.TimeTotal,
-			prometheus.CounterValue,
+			prometheus.GaugeValue,
 			float64(data.PercentPrivilegedTime)*ticksToSecondsScaleFactor,
-			core, "privileged",
+			hostName+" "+hostUUID, core, "privileged",
 		)
 		ch <- prometheus.MustNewConstMetric(
 			c.TimeTotal,
-			prometheus.CounterValue,
+			prometheus.GaugeValue,
 			float64(data.PercentUserTime)*ticksToSecondsScaleFactor,
-			core, "user",
+			hostName+" "+hostUUID, core, "user",
 		)
-		ch <- prometheus.MustNewConstMetric(
-			c.InterruptsTotal,
-			prometheus.CounterValue,
-			float64(data.InterruptsPersec),
-			core,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.DPCsTotal,
-			prometheus.CounterValue,
-			float64(data.DPCsQueuedPersec),
-			core,
-		)
+
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.InterruptsTotal,
+				prometheus.CounterValue,
+				float64(data.InterruptsPersec),
+				hostName + " " + hostUUID, core,
+			)*/
+		/*		ch <- prometheus.MustNewConstMetric(
+				c.DPCsTotal,
+				prometheus.CounterValue,
+				float64(data.DPCsQueuedPersec),
+				hostName + " " + hostUUID, core,
+			)*/
 	}
+
+	/*	var dst2 []Win32_Processor
+		q4 := queryAll(&dst2)
+		if err := wmi.Query(q4, &dst2); err != nil {
+			return nil, err
+		}
+
+		if len(dst2) == 0 {
+			return nil, errors.New("WMI query returned empty result set")
+		}*/
+
+	/*	ch <- prometheus.MustNewConstMetric(
+		c.Cores,
+		prometheus.GaugeValue,
+		float64(dst2[0].NumberOfCores),
+		hostName + " " + hostUUID,
+	)*/
+
+	/*	ch <- prometheus.MustNewConstMetric(
+		c.ClockSpeed,
+		prometheus.GaugeValue,
+		float64(dst2[0].CurrentClockSpeed),
+		hostName + " " + hostUUID,
+	)*/
+
+	/*	ch <- prometheus.MustNewConstMetric(
+		c.LogicalProcessors,
+		prometheus.GaugeValue,
+		float64(dst2[0].NumberOfLogicalProcessors),
+		hostName + " " + hostUUID,
+	)*/
 
 	return nil, nil
 }

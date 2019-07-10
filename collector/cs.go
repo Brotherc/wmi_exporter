@@ -55,6 +55,7 @@ func (c *CSCollector) Collect(ch chan<- prometheus.Metric) error {
 type Win32_ComputerSystem struct {
 	NumberOfLogicalProcessors uint32
 	TotalPhysicalMemory       uint64
+	Model                     string
 }
 
 func (c *CSCollector) collect(ch chan<- prometheus.Metric) (*prometheus.Desc, error) {

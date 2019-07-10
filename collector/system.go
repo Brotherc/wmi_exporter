@@ -4,6 +4,7 @@ package collector
 
 import (
 	"errors"
+	"fmt"
 	"github.com/StackExchange/wmi"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
@@ -20,12 +21,13 @@ type SystemCollector struct {
 	ProcessorQueueLength     *prometheus.Desc
 	SystemCallsTotal         *prometheus.Desc
 	SystemUpTime             *prometheus.Desc
-	Threads                  *prometheus.Desc
+	NumOfThreads             *prometheus.Desc
 }
 
 // NewSystemCollector ...
 func NewSystemCollector() (Collector, error) {
 	const subsystem = "system"
+	const subsystem_host = "host"
 
 	return &SystemCollector{
 		ContextSwitchesTotal: prometheus.NewDesc(
@@ -53,15 +55,15 @@ func NewSystemCollector() (Collector, error) {
 			nil,
 		),
 		SystemUpTime: prometheus.NewDesc(
-			prometheus.BuildFQName(Namespace, subsystem, "system_up_time"),
-			"System boot time (WMI source: PerfOS_System.SystemUpTime)",
-			nil,
+			prometheus.BuildFQName(Namespace, subsystem_host, "up_time"),
+			"The host uptime since last start up (WMI source: PerfOS_System.SystemUpTime)",
+			[]string{"host"},
 			nil,
 		),
-		Threads: prometheus.NewDesc(
-			prometheus.BuildFQName(Namespace, subsystem, "threads"),
-			"Current number of threads (WMI source: PerfOS_System.Threads)",
-			nil,
+		NumOfThreads: prometheus.NewDesc(
+			prometheus.BuildFQName(Namespace, subsystem_host, "num_of_threads"),
+			"Total threads count (WMI source: PerfOS_System.Threads)",
+			[]string{"host"},
 			nil,
 		),
 	}, nil
@@ -90,46 +92,101 @@ type Win32_PerfRawData_PerfOS_System struct {
 	Timestamp_Object          uint64
 }
 
+type Win32_NetworkAdapterConfiguration struct {
+	IPAddress []string
+}
+
+type Win32_ComputerSystemProduct struct {
+	UUID string
+}
+
 func (c *SystemCollector) collect(ch chan<- prometheus.Metric) (*prometheus.Desc, error) {
+	var dst_csproduct []Win32_ComputerSystemProduct
+	q := queryAll(&dst_csproduct)
+	if err := wmi.Query(q, &dst_csproduct); err != nil {
+		return nil, err
+	}
+
+	if len(dst_csproduct) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+	hostUUID := dst_csproduct[0].UUID
+
 	var dst []Win32_PerfRawData_PerfOS_System
-	q := queryAll(&dst)
-	if err := wmi.Query(q, &dst); err != nil {
+	q2 := queryAll(&dst)
+	if err := wmi.Query(q2, &dst); err != nil {
 		return nil, err
 	}
 	if len(dst) == 0 {
 		return nil, errors.New("WMI query returned empty result set")
 	}
 
-	ch <- prometheus.MustNewConstMetric(
+	/*	ch <- prometheus.MustNewConstMetric(
 		c.ContextSwitchesTotal,
 		prometheus.CounterValue,
 		float64(dst[0].ContextSwitchesPersec),
-	)
-	ch <- prometheus.MustNewConstMetric(
+	)*/
+	/*	ch <- prometheus.MustNewConstMetric(
 		c.ExceptionDispatchesTotal,
 		prometheus.CounterValue,
 		float64(dst[0].ExceptionDispatchesPersec),
-	)
-	ch <- prometheus.MustNewConstMetric(
+	)*/
+	/*	ch <- prometheus.MustNewConstMetric(
 		c.ProcessorQueueLength,
 		prometheus.GaugeValue,
 		float64(dst[0].ProcessorQueueLength),
-	)
-	ch <- prometheus.MustNewConstMetric(
+	)*/
+	/*	ch <- prometheus.MustNewConstMetric(
 		c.SystemCallsTotal,
 		prometheus.CounterValue,
 		float64(dst[0].SystemCallsPersec),
-	)
+	)*/
 	ch <- prometheus.MustNewConstMetric(
 		c.SystemUpTime,
 		prometheus.GaugeValue,
 		// convert from Windows timestamp (1 jan 1601) to unix timestamp (1 jan 1970)
 		float64(dst[0].SystemUpTime-116444736000000000)/float64(dst[0].Frequency_Object),
+		hostUUID,
 	)
-	ch <- prometheus.MustNewConstMetric(
-		c.Threads,
+	/*	ch <- prometheus.MustNewConstMetric(
+		c.NumOfThreads,
 		prometheus.GaugeValue,
 		float64(dst[0].Threads),
-	)
+		hostUUID,
+	)*/
+
+	/*	fmt.Println("====host====" + "hostId(The calculated identifier of the pyhsical Host):" + hostUUID)*/
+
+	var dst_netAdapterCfg []Win32_NetworkAdapterConfiguration
+	q3 := queryAll(&dst_netAdapterCfg)
+	if err := wmi.Query(q3, &dst_netAdapterCfg); err != nil {
+		return nil, err
+	}
+
+	if len(dst_netAdapterCfg) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+
+	fmt.Println("====host====" + "ipAddresses(List of IP addresses):")
+	for _, data := range dst_netAdapterCfg {
+		if len(data.IPAddress) != 0 {
+			fmt.Println(data.IPAddress)
+		}
+	}
+
+	var dst_cs []Win32_ComputerSystem
+	q4 := queryAll(&dst_cs)
+	if err := wmi.Query(q4, &dst_cs); err != nil {
+		return nil, err
+	}
+
+	if len(dst_cs) == 0 {
+		return nil, errors.New("WMI query returned empty result set")
+	}
+
+	if dst_cs[0].Model == "VirtualBox" || dst_cs[0].Model == "Virtual Machine" || dst_cs[0].Model == "VMware Virtual Platform" {
+		fmt.Println("====host====" + "该主机为虚拟机")
+	}
+
 	return nil, nil
 }
